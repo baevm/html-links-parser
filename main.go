@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -138,6 +139,7 @@ func main() {
 
 	os.MkdirAll("./parsed", 0755)
 
+	now := time.Now()
 	text, err := getHtmlPage(url)
 
 	if err != nil {
@@ -153,5 +155,6 @@ func main() {
 		textFile.WriteString(val + "\n")
 	}
 
-	fmt.Printf("Successfully parsed data from %s", url)
+	fmt.Printf("Successfully parsed data from %s\n", url)
+	fmt.Printf("Parsed in %g seconds \n", time.Now().Sub(now).Seconds())
 }
