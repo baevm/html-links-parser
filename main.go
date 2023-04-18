@@ -47,8 +47,8 @@ func getTagAttr(token html.Token, key string) (string, bool) {
 	return "", true
 }
 
-func ParseHtml(text string, baseUrl string, tag Tag) []string {
-	token := html.NewTokenizer(strings.NewReader(text))
+func ParseHtml(text *string, baseUrl string, tag Tag) []string {
+	token := html.NewTokenizer(strings.NewReader(*text))
 
 	var res []string
 	var isRequestedTag bool
@@ -131,6 +131,11 @@ func main() {
 
 	tag = ParseOptions[parseOption]
 
+	if tag == nil {
+		fmt.Printf("Error: No such option")
+		return
+	}
+
 	os.MkdirAll("./parsed", 0755)
 
 	text, err := getHtmlPage(url)
@@ -140,7 +145,7 @@ func main() {
 		return
 	}
 
-	data := ParseHtml(text, url, tag)
+	data := ParseHtml(&text, url, tag)
 
 	textFile, _ := os.Create("./parsed/data.txt")
 
