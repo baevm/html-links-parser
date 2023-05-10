@@ -3,9 +3,12 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/html"
@@ -48,12 +51,19 @@ func getTagAttr(token html.Token, key string) (string, bool) {
 	return "", true
 }
 
-func ParseHtml(text *string, baseUrl string, tag Tag) []string {
-	token := html.NewTokenizer(strings.NewReader(*text))
+func ParseHtml(baseUrl string, tag Tag) error {
+	file, err := ioutil.ReadFile(fmt.Sprintf("./parsed/%s.html", baseUrl))
+
+	if err != nil {
+		return err
+	}
+
+	token := html.NewTokenizer(strings.NewReader(string(file)))
 
 	var res []string
 	var isRequestedTag bool
 
+parser:
 	for {
 		// get next token
 		tt := token.Next()
@@ -61,7 +71,7 @@ func ParseHtml(text *string, baseUrl string, tag Tag) []string {
 		switch {
 		// if end of line return
 		case tt == html.ErrorToken:
-			return res
+			break parser
 
 		// if token is starting token e.g <div>
 		case tt == html.StartTagToken:
@@ -77,7 +87,7 @@ func ParseHtml(text *string, baseUrl string, tag Tag) []string {
 					link := fmt.Sprintf("Link: %s", attr)
 					res = append(res, link)
 				} else {
-					fullLink := baseUrl + attr
+					fullLink := fmt.Sprintf("%s/%s", baseUrl, attr)
 					link := fmt.Sprintf("Link: %s", fullLink)
 					res = append(res, link)
 				}
@@ -95,9 +105,29 @@ func ParseHtml(text *string, baseUrl string, tag Tag) []string {
 			isRequestedTag = false
 		}
 	}
+
+	textFile, _ := os.Create(fmt.Sprintf("./parsed/%s.txt", baseUrl))
+
+	for _, val := range res {
+		textFile.WriteString(val + "\n")
+	}
+
+	return nil
 }
 
-func getHtmlPage(url string) (string, error) {
+func getUrlDomainName(fullUrl string) (string, error) {
+	newUrl, err := url.Parse(fullUrl)
+
+	if err != nil {
+		return "", nil
+	}
+
+	return newUrl.Hostname(), nil
+}
+
+func getHtmlPage(url string, wg *sync.WaitGroup, htmlChan chan string) (string, error) {
+	defer wg.Done()
+
 	res, err := http.Get(url)
 
 	if err != nil {
@@ -108,24 +138,40 @@ func getHtmlPage(url string) (string, error) {
 
 	scanner := bufio.NewScanner(res.Body)
 
-	htmlFile, _ := os.Create("./parsed/Main.html")
+	filename, _ := getUrlDomainName(url)
+
+	filePath := fmt.Sprintf("./parsed/%s.html", filename)
+
+	htmlFile, _ := os.Create(filePath)
 
 	for scanner.Scan() {
 		htmlFile.WriteString(scanner.Text())
 	}
 
-	text, err := readHtmlFromFile("./parsed/Main.html")
+	htmlChan <- filename
 
-	return text, err
+	return filePath, err
 }
 
 func main() {
-	var url string
 	var parseOption int
 	var tag Tag
+	urls := []string{
+		"https://habr.com/ru/top/weekly/",
+		"https://roadmap.sh/frontend",
+		"https://stackoverflow.com/",
+		"https://vc.ru",
+		"https://dtf.ru",
+		"https://gobyexample.com/",
+	}
 
-	fmt.Println("Enter url you want to parse: ")
-	fmt.Scan(&url)
+	// fmt.Println("Enter urls you want to parse: ")
+
+	// scanner := bufio.NewScanner(os.Stdin)
+	// if scanner.Scan() {
+	// 	line := scanner.Text()
+	// 	urls = append(urls, line)
+	// }
 
 	fmt.Printf("Select what you want to parse? \n 1. Links \n 2. Images \n")
 	fmt.Scan(&parseOption)
@@ -140,21 +186,25 @@ func main() {
 	os.MkdirAll("./parsed", 0755)
 
 	now := time.Now()
-	text, err := getHtmlPage(url)
+	htmlChan := make(chan string)
+	var wg sync.WaitGroup
 
-	if err != nil {
-		fmt.Printf("Error: %s", err)
-		return
+	// get html pages
+	for _, v := range urls {
+		wg.Add(1)
+		go getHtmlPage(v, &wg, htmlChan)
 	}
 
-	data := ParseHtml(&text, url, tag)
+	go func() {
+		wg.Wait()
+		close(htmlChan)
+	}()
 
-	textFile, _ := os.Create("./parsed/data.txt")
-
-	for _, val := range data {
-		textFile.WriteString(val + "\n")
+	for v := range htmlChan {
+		fmt.Println(v)
+		ParseHtml(v, tag)
 	}
 
-	fmt.Printf("Successfully parsed data from %s\n", url)
+	fmt.Printf("Successfully parsed data from %s\n", urls)
 	fmt.Printf("Parsed in %g seconds \n", time.Now().Sub(now).Seconds())
 }
