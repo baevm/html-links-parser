@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -13,6 +15,11 @@ import (
 
 	"golang.org/x/net/html"
 )
+
+type cfg struct {
+	parseOption int
+	linksFile   string
+}
 
 type Tag interface{}
 
@@ -31,16 +38,6 @@ var ParseOptions = map[int]Tag{
 	2: img,
 }
 
-func readHtmlFromFile(filename string) (string, error) {
-	bs, err := os.ReadFile(filename)
-
-	if err != nil {
-		return "", err
-	}
-
-	return string(bs), err
-}
-
 func getTagAttr(token html.Token, key string) (string, bool) {
 	for _, val := range token.Attr {
 		if val.Key == key {
@@ -51,7 +48,8 @@ func getTagAttr(token html.Token, key string) (string, bool) {
 	return "", true
 }
 
-func ParseHtml(baseUrl string, tag Tag) error {
+func ParseHtml(baseUrl string, tag Tag, wg *sync.WaitGroup) error {
+	defer wg.Done()
 	file, err := ioutil.ReadFile(fmt.Sprintf("./parsed/%s.html", baseUrl))
 
 	if err != nil {
@@ -98,7 +96,7 @@ parser:
 			t := token.Token()
 
 			if isRequestedTag {
-				link := fmt.Sprintf("Name: %s\n", t.Data)
+				link := fmt.Sprintf("Name: %s\n", strings.TrimSpace(t.Data))
 				res = append(res, link)
 			}
 
@@ -125,24 +123,44 @@ func getUrlDomainName(fullUrl string) (string, error) {
 	return newUrl.Hostname(), nil
 }
 
-func getHtmlPage(url string, wg *sync.WaitGroup, htmlChan chan string) (string, error) {
+func getHtmlPage(url string, wg *sync.WaitGroup, htmlChan chan string) error {
 	defer wg.Done()
 
-	res, err := http.Get(url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 
 	if err != nil {
-		return "", err
+		fmt.Println(err)
+		return err
+	}
+
+	client := &http.Client{}
+
+	res, err := client.Do(req)
+
+	if err != nil {
+		return err
 	}
 
 	defer res.Body.Close()
 
 	scanner := bufio.NewScanner(res.Body)
 
-	filename, _ := getUrlDomainName(url)
+	filename, err := getUrlDomainName(url)
+
+	if err != nil {
+		return err
+	}
 
 	filePath := fmt.Sprintf("./parsed/%s.html", filename)
 
-	htmlFile, _ := os.Create(filePath)
+	htmlFile, err := os.Create(filePath)
+
+	if err != nil {
+		return err
+	}
 
 	for scanner.Scan() {
 		htmlFile.WriteString(scanner.Text())
@@ -150,33 +168,24 @@ func getHtmlPage(url string, wg *sync.WaitGroup, htmlChan chan string) (string, 
 
 	htmlChan <- filename
 
-	return filePath, err
+	return err
 }
 
 func main() {
-	var parseOption int
-	var tag Tag
-	urls := []string{
-		"https://habr.com/ru/top/weekly/",
-		"https://roadmap.sh/frontend",
-		"https://stackoverflow.com/",
-		"https://vc.ru",
-		"https://dtf.ru",
-		"https://gobyexample.com/",
+	app := &cfg{}
+
+	flag.IntVar(&app.parseOption, "o", 1, "Parse option: 1. Links \n 2. Images")
+	flag.StringVar(&app.linksFile, "f", "./links.txt", "File with links to parse")
+	flag.Parse()
+
+	urls, err := readLinksFile(app.linksFile)
+
+	if err != nil {
+		fmt.Printf("Error: %s", err)
+		return
 	}
 
-	// fmt.Println("Enter urls you want to parse: ")
-
-	// scanner := bufio.NewScanner(os.Stdin)
-	// if scanner.Scan() {
-	// 	line := scanner.Text()
-	// 	urls = append(urls, line)
-	// }
-
-	fmt.Printf("Select what you want to parse? \n 1. Links \n 2. Images \n")
-	fmt.Scan(&parseOption)
-
-	tag = ParseOptions[parseOption]
+	tag := ParseOptions[app.parseOption]
 
 	if tag == nil {
 		fmt.Printf("Error: No such option")
@@ -185,9 +194,9 @@ func main() {
 
 	os.MkdirAll("./parsed", 0755)
 
-	now := time.Now()
-	htmlChan := make(chan string)
 	var wg sync.WaitGroup
+	htmlChan := make(chan string)
+	now := time.Now()
 
 	// get html pages
 	for _, v := range urls {
@@ -195,16 +204,21 @@ func main() {
 		go getHtmlPage(v, &wg, htmlChan)
 	}
 
+	// wait for all fetching goroutines to finish
 	go func() {
 		wg.Wait()
 		close(htmlChan)
 	}()
 
+	// start parsing goroutines
 	for v := range htmlChan {
 		fmt.Println(v)
-		ParseHtml(v, tag)
+		wg.Add(1)
+		go ParseHtml(v, tag, &wg)
 	}
 
-	fmt.Printf("Successfully parsed data from %s\n", urls)
-	fmt.Printf("Parsed in %g seconds \n", time.Now().Sub(now).Seconds())
+	wg.Wait()
+
+	fmt.Printf("Successfully parsed data from %s \n", app.linksFile)
+	fmt.Printf("Parsed in %g seconds \n", time.Since(now).Seconds())
 }
